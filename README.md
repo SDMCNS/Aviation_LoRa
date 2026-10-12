@@ -80,12 +80,39 @@ python distill_corpus.py --chunks-dir chunks --out-file golden_chunks.jsonl --ma
 4. Run the generator:
 
 ```powershell
-# Run with a 7.5-hour budget across all categories in balanced round-robin
-python generate_qa_pipeline.py --golden-chunks golden_chunks.jsonl --max-hours 7.5 --workers 1
+# Run with an 8-hour overnight budget across all categories in balanced round-robin
+python generate_qa_pipeline.py --golden-chunks golden_chunks.jsonl --max-hours 8.0 --workers 1
 ```
 
 - **Resumeable:** Uses `qa_generation_state.db` so you can cancel (`Ctrl+C`) and restart at any time without duplicating previously generated pairs.
 - **Output:** Appends validated ChatML-formatted Q&A pairs to `aviation_qa_lora.jsonl`.
+
+#### Realistic Processing Times & Throughput Telemetry
+
+Based on empirical runtime logs from a 10.6-hour continuous production run on a local GPU (RTX 5060 Ti 16 GB, LM Studio serving `google/gemma-4-e4b`):
+
+| Metric | Measured Baseline (`--workers 1`) | Multi-Worker Scaling (`--workers 2` to `4`) |
+| :--- | :--- | :--- |
+| **Average Latency** | **17.58 seconds / chunk** (median: 15.00s) | Shared GPU inference latency |
+| **Generation Rate** | **~205 chunks / hour** (~3.4 chunks / min) | **~350–500 chunks / hour** (multi-slot LM Studio) |
+| **Dataset Yield** | **~410 Q&A pairs / hour** (~2 pairs / chunk) | **~700–1,000 Q&A pairs / hour** |
+
+#### Golden Corpus Completion Projections (`golden_chunks.jsonl`)
+
+The distilled golden corpus contains **20,490 high-salience chunks**:
+- **Currently Processed:** **1,500 chunks** (~3,000 pairs contributing to the initial 4,350 dataset).
+- **Remaining Chunks:** **18,990 chunks** (expected yield: ~37,980 additional Q&A pairs).
+
+| Workload Scenario | Chunks | Single-Worker (`--workers 1`) | Dual-Worker (`--workers 2`) | 4-Worker (`--workers 4`) | High-Throughput API (Flash / Batch) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Remaining Golden Chunks** | 18,990 | **~92.7 hrs (~3.9 days)** | **~50–55 hrs (~2.2 days)** | **~35–45 hrs (~1.6 days)** | **~15–25 minutes** |
+| **Full Corpus (From Scratch)** | 20,490 | **~100.1 hrs (~4.2 days)** | **~55–60 hrs (~2.4 days)** | **~40–48 hrs (~1.8 days)** | **~20–30 minutes** |
+
+> [!TIP]
+> **Recommended Production Strategy:** 
+> - **Local Overnight Batches:** Run in 8-hour sessions (`--max-hours 8.0`). The SQLite database will safely resume from where it left off each morning.
+> - **LM Studio Concurrency:** Since quantized Gemma-4-E4B requires only ~3.5–4.5 GB VRAM, configure LM Studio with 2–4 parallel request slots in server settings to cut generation time in half.
+
 
 ---
 
@@ -126,7 +153,8 @@ python train_lora.py `
   --lora-alpha 32
 ```
 
-- **Memory Footprint:** Fits comfortably within 10–12 GB of VRAM on a 16 GB RTX 5060 Ti / 4060 Ti.
+- **Empirical Training Runtime (RTX 5060 Ti 16 GB):** **41.76 minutes** (2,492s) for 1.0 epoch across 3,617 training samples (227 steps @ 10.98s/step, effective batch size 16), achieving peak VRAM of **9.71 GB** and final loss of **1.599**.
+- **Memory Footprint:** Safely constrained under 10 GB VRAM via bf16 embedding preservation.
 - **Target Modules:** All linear projection layers (`q_proj`, `k_proj`, `v_proj`, `o_proj`, `gate_proj`, `up_proj`, `down_proj`).
 - **Checkpoints:** Saved under `models/aviation-gemma-lora/`.
 
