@@ -136,3 +136,42 @@ After training, the adapter (`models/aviation-gemma-lora/`) can be used in two w
 
 1. **Dynamic Runtime Merging:** Load the base model once in memory and apply the ~35 MB adapter weights on the fly (ideal for multi-tenant serving).
 2. **Permanent Export:** Use `model.merge_and_unload()` in `peft` to permanently bake the $\Delta W$ matrix directly into the base weights, then export to **GGUF format** for execution in LM Studio, Ollama, or llama.cpp.
+
+---
+
+## 8. Hardware Stability & The 262K Vocabulary Embedding Trap
+
+When training modern high-capacity open models like `google/gemma-4-E4B-it` on consumer GPUs (e.g. 16 GB RTX 5060 Ti), standard QLoRA recipes encounter a subtle memory failure mode:
+
+### The Pitfall in Standard PEFT:
+PEFT's default [`prepare_model_for_kbit_training`](train_lora.py) executes:
+```python
+for param in model.parameters():
+    if (param.dtype == torch.float16 or param.dtype == torch.bfloat16) and param.__class__.__name__ != "Params4bit":
+        param.data = param.data.to(torch.float32)
+```
+- Gemma-4 features a multimodal vocabulary of **262,144 tokens**. Its unquantized embedding tables (`embed_tokens` and `embed_tokens_per_layer`) take **6.66 GB in native `bfloat16`**.
+- Blindly upcasting these frozen embedding weights to `float32` doubles their memory requirement to **13.3+ GB**.
+- Combined with the base model weights, PyTorch reserves **over 21.9 GB of VRAM**. On a 16 GB card, Windows WDDM begins thrashing virtual memory over PCIe, locking up the display driver and freezing the machine during dataset preparation.
+
+### Our Solution (`prepare_kbit_model_safe`):
+- We freeze base model parameters and register gradient tracking hooks (`model.enable_input_require_grads()`) **without** casting frozen embedding matrices to `float32`.
+- Non-quantized weights remain in native **`bfloat16`**, slashing peak reserved VRAM from **21.92 GB down to 8.91 GB**.
+- This leaves **~6 GB of clean VRAM headroom** on a 16 GB card for activations and paged 8-bit AdamW optimizer states.
+
+---
+
+## 9. Evaluating LoRA Efficacy: The Fictional Regulatory Benchmark
+
+Domain-specific LLMs cannot be properly evaluated by perplexity or general benchmarks (e.g. MMLU) alone. Aviation regulatory analysis requires:
+1. **Preserving Legal Modality:** Strict differentiation between obligations (*shall*), discretionary permissions (*may*), triggers (*where*), and exclusive preconditions (*only where*).
+2. **Epistemic Restraint:** Refusing to assume an alternative source is authorized merely because it is technically available, avoiding arbitrary numerical deadlines for vague standards like *"without undue delay"*, and avoiding external rule hallucinations (e.g. FAA/ICAO).
+3. **Decision Tree Logic:** Mapping degraded and contingency states without skipping procedural preconditions.
+
+Our benchmark suite (`compare_lora.py`) tests both the Base Model and the LoRA Model on an identical authoritative, fictional provision (R-17) and scores output across 5 quantitative dimensions:
+- **Structural Completeness (20%)**
+- **Regulatory Modality (20%)**
+- **Decision Branching (20%)**
+- **Epistemic Restraint (20%)**
+- **Analytical Precision & Density (20%)**
+

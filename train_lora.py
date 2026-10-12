@@ -58,6 +58,27 @@ def show_gpu_info() -> None:
     log(f"PyTorch Version: {torch.__version__} | CUDA Version: {torch.version.cuda}")
     log("")
 
+
+def prepare_kbit_model_safe(model: torch.nn.Module) -> torch.nn.Module:
+    """
+    Safely prepares a 4-bit quantized model for LoRA fine-tuning without
+    upcasting massive non-quantized layers (such as Gemma-4's 5.4 GB embedding table)
+    from bfloat16 to float32. Standard PEFT prepare_model_for_kbit_training blindly
+    casts all non-4bit parameters to fp32, which doubles embedding memory and
+    causes VRAM usage to exceed 21 GB on a 16 GB GPU, crashing Windows.
+    """
+    for param in model.parameters():
+        param.requires_grad = False
+
+    if hasattr(model, "enable_input_require_grads"):
+        model.enable_input_require_grads()
+    else:
+        def make_inputs_require_grad(module, input, output):
+            output.requires_grad_(True)
+        model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
+
+    return model
+
 # ==============================================================================
 # CLI ARGUMENTS
 # ==============================================================================
@@ -268,19 +289,33 @@ def main():
     )
     model.config.use_cache = False
 
-    # Prepare for k-bit training
-    model = prepare_model_for_kbit_training(model)
+    # Prepare for k-bit training safely without ballooning frozen embeddings to fp32
+    model = prepare_kbit_model_safe(model)
 
     # 5. LoRA Adapter Configuration
     log("Configuring LoRA Adapter...")
+    # For multimodal Gemma-4 models, target only language_model layers to avoid
+    # custom ClippableLinear layers in vision/audio towers which PEFT does not support.
+    if "gemma-4" in args.model.lower():
+        target_modules = r".*language_model.*\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)"
+        exclude_modules = r".*(vision_tower|audio_tower).*"
+    else:
+        target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+        exclude_modules = None
+
     lora_config = LoraConfig(
         r=args.lora_r,
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
         bias="none",
         task_type="CAUSAL_LM",
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+        target_modules=target_modules,
+        exclude_modules=exclude_modules
     )
+
+    log("Applying LoRA adapter to model...")
+    model = get_peft_model(model, lora_config)
+    model.print_trainable_parameters()
 
     # 6. SFT Training Configuration
     compute_dtype = "bf16" if torch.cuda.is_bf16_supported() else "fp16"
@@ -306,9 +341,11 @@ def main():
         bf16=torch.cuda.is_bf16_supported(),
         fp16=not torch.cuda.is_bf16_supported(),
         gradient_checkpointing=True,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
         optim="paged_adamw_8bit",
         report_to="none",
-        dataset_num_proc=1,
+        loss_type="nll",
+        dataset_num_proc=None,
         packing=False
     )
 
@@ -319,7 +356,6 @@ def main():
         args=training_config,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
-        peft_config=lora_config,
         processing_class=tokenizer,
     )
 

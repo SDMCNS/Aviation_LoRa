@@ -33,6 +33,8 @@ Adapting an LLM like `google/gemma-4-E4B-it` for aviation operations poses two u
 ├── prepare_lora_dataset.py        # Hygiene scrubbing & document-isolated train/val/test splitter
 ├── train_lora.py                  # PyTorch + PEFT QLoRA 4-bit fine-tuning script
 ├── evaluate_lora.py               # Interactive CLI & batch test evaluation tool
+├── compare_lora.py                # Comparative LoRA vs. Base model benchmark with 5D scoring
+├── reports/                       # Generated comparative evaluation benchmark reports (Markdown + JSON)
 ├── aviation_qa_lora.jsonl         # Active synthetic Q&A dataset in ChatML format
 ├── qa_generation_state.db         # SQLite checkpoint DB preventing duplicate inference
 └── archive/                       # Deprecated/scratch scripts (excluded from git)
@@ -147,6 +149,27 @@ python evaluate_lora.py `
   --adapter-path models/aviation-gemma-lora `
   --eval-file dataset_splits/test.jsonl
 ```
+
+---
+
+### Step 7: Comparative LoRA vs. Base Model Benchmark (`compare_lora.py`)
+
+Quantitatively evaluate the effectiveness of the LoRA adapter against the unadapted base model using a structured, authoritative regulatory parsing prompt (fictional provision R-17):
+
+```powershell
+# Run benchmark on current adapter / checkpoint
+python compare_lora.py --base-model google/gemma-4-E4B-it --adapter models/aviation-gemma-lora
+```
+
+#### How it works:
+- **Zero-Reload Single Pass:** Loads the base model in 4-bit NF4 and dynamically toggles the adapter using `model.disable_adapter()` to evaluate both Base and LoRA without restarting or reloading weights.
+- **5-Dimensional Analytical Rubric:** Evaluates both outputs on a 0–100 scale:
+  1. **Structural & Sectional Adherence:** Sections A–E presence and markdown table schema verification.
+  2. **Regulatory Modality & Actor Grounding:** Rigorous parsing of *shall*, *may*, *where*, *only where*, *neither...nor*, and ANSP/unit actor attribution.
+  3. **Decision Logic & Branching Fidelity:** Disentanglement of normal, degraded, and contingency operational states, preserving the conjunctive dual requirement (*assessed as suitable* AND *procedures permit*).
+  4. **Epistemic Restraint & Negative Constraints:** Verifies that technical availability is not conflated with operational authorization, prevents arbitrary time assignments to *"without undue delay"*, and prohibits hallucinated real-world frameworks.
+  5. **Analytical Density & Precision:** Legal vocabulary richness, zero conversational padding, and complete provision indexing.
+- **Outputs:** Terminal scorecard, comprehensive Markdown report (`reports/lora_vs_base_benchmark_<timestamp>.md`), and JSON metrics export.
 
 ---
 

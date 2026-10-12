@@ -26,7 +26,16 @@ def load_lora_model(base_model_id: str, adapter_path: str):
         bnb_4bit_compute_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
     )
     tokenizer = AutoTokenizer.from_pretrained(adapter_path if Path(adapter_path).exists() else base_model_id)
-    base_model = AutoModelForCausalLM.from_pretrained(
+    
+    model_cls = AutoModelForCausalLM
+    try:
+        from transformers.models.gemma4.modeling_gemma4 import Gemma4ForCausalLM
+        if "gemma-4" in base_model_id.lower():
+            model_cls = Gemma4ForCausalLM
+    except ImportError:
+        pass
+
+    base_model = model_cls.from_pretrained(
         base_model_id,
         quantization_config=bnb_config,
         device_map="auto",
